@@ -33,9 +33,11 @@ set(SOURCES
     src/common.c
     src/clock_control.c
     src/display.c
+    src/controller.c
     #src/region_switch.c
     #src/reset_button.c
     #src/config_store.c
+    pico-ssd1306/ssd1306.c
 )
 
 add_executable(openheart ${SOURCES})
@@ -50,9 +52,6 @@ target_compile_definitions(openheart PRIVATE
         PLL_SYS_POSTDIV2=2
         SYS_CLK_HZ=107500000
 )
-
-# Add the pico-ssd1306 library
-add_subdirectory(pico-ssd1306)
 
 # Include directories
 target_include_directories(openheart PRIVATE
@@ -71,7 +70,6 @@ target_link_libraries(openheart
     hardware_clocks
     hardware_watchdog
     pico_multicore
-    pico_ssd1306
     hardware_i2c
 )
 
