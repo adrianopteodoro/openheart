@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define LOW 0
+#define HIGH 1
+
 /*
  * Sega Genesis/Mega Drive 3/6-Button Controller Interface
  * -------------------------------------------------------
@@ -29,7 +32,7 @@ void genesis_controller_gpio_init(void) {
     gpio_init(GPIO_PIN_B);       gpio_set_dir(GPIO_PIN_B, GPIO_IN);       gpio_pull_up(GPIO_PIN_B);
     gpio_init(GPIO_PIN_C);       gpio_set_dir(GPIO_PIN_C, GPIO_IN);       gpio_pull_up(GPIO_PIN_C);
 
-    gpio_init(GPIO_PIN_SELECT);  gpio_set_dir(GPIO_PIN_SELECT, GPIO_OUT); gpio_put(GPIO_PIN_SELECT, 1);
+    gpio_init(GPIO_PIN_SELECT);  gpio_set_dir(GPIO_PIN_SELECT, GPIO_OUT); gpio_put(GPIO_PIN_SELECT, HIGH);
 }
 
 /**
@@ -37,22 +40,44 @@ void genesis_controller_gpio_init(void) {
  * @param value 1 for HIGH, 0 for LOW.
  */
 void set_select_line(int value) {
-    gpio_put(GPIO_PIN_SELECT, value ? 1 : 0);
+    gpio_put(GPIO_PIN_SELECT, value ? HIGH : LOW);
+}
+
+/**
+ * @brief Pulse the SELECT line: HIGH->LOW with short delay.
+ *        Used for 6-button handshake sequence.
+ */
+void pulse_select_line(void) {
+    set_select_line(HIGH);
+    sleep_us(10);
+    set_select_line(LOW);
+    sleep_us(10);
 }
 
 /**
  * @brief Read the 6 data lines (Up, Down, Left, Right, B, C).
- * @return Bitfield: bit0=Up, bit1=Down, bit2=Left, bit3=Right, bit4=B, bit5=C.
+ *        Also checks if all directions (U/D/L/R) are low at the same time.
+ * @return Bitfield: bit0=Up, bit1=Down, bit2=Left, bit3=Right, bit4=B, bit5=C, bit6=AllDirsLow.
  *         All lines are active low (pressed = 1).
+ *         bit6 is set if U, D, L, R are all low (pressed) simultaneously.
  */
 uint8_t read_data_lines(void) {
     uint8_t data = 0;
-    data |= (!gpio_get(GPIO_PIN_UP)    << 0); // Active low: pressed = 0
-    data |= (!gpio_get(GPIO_PIN_DOWN)  << 1);
-    data |= (!gpio_get(GPIO_PIN_LEFT)  << 2);
-    data |= (!gpio_get(GPIO_PIN_RIGHT) << 3);
-    data |= (!gpio_get(GPIO_PIN_B)     << 4);
-    data |= (!gpio_get(GPIO_PIN_C)     << 5);
+    bool up    = !gpio_get(GPIO_PIN_UP);
+    bool down  = !gpio_get(GPIO_PIN_DOWN);
+    bool left  = !gpio_get(GPIO_PIN_LEFT);
+    bool right = !gpio_get(GPIO_PIN_RIGHT);
+
+    data |= (up    << 0); // Up
+    data |= (down  << 1); // Down
+    data |= (left  << 2); // Left
+    data |= (right << 3); // Right
+    data |= (!gpio_get(GPIO_PIN_B)     << 4); // B
+    data |= (!gpio_get(GPIO_PIN_C)     << 5); // C
+
+    // Set bit 6 if all directions are pressed (all low)
+    data |= ((up && down && left && right) << 6);
+
     return data;
 }
 
@@ -70,7 +95,7 @@ void read_genesis_joypad(joypad_state_t *pad) {
     *pad = (joypad_state_t){0}; // Clear all button states
 
     // 1. SELECT = 1: Read directions, B, C (directions only valid here)
-    set_select_line(1); sleep_us(10);
+    set_select_line(HIGH); sleep_us(10);
     data = read_data_lines();
     pad->up    = (data & (1 << 0)) != 0;
     pad->down  = (data & (1 << 1)) != 0;
@@ -80,24 +105,20 @@ void read_genesis_joypad(joypad_state_t *pad) {
     pad->c     = (data & (1 << 5)) != 0;
 
     // 2. SELECT = 0: Read A, START (ignore directions here)
-    set_select_line(0); sleep_us(10);
+    set_select_line(LOW); sleep_us(10);
     data = read_data_lines();
     pad->a     = (data & (1 << 4)) != 0;
     pad->start = (data & (1 << 5)) != 0;
 
-    // 3. Handshake: 4 rapid SELECT transitions (ignore reads)
-    for (int i = 0; i < 3; ++i) {
-        set_select_line(1); sleep_us(10);
-        set_select_line(0); sleep_us(10);
-    }
-    // Last handshake SELECT=1, then SELECT=0 for detection
-    set_select_line(1); sleep_us(10);
-    set_select_line(0); sleep_us(10);
+    // 3. Handshake: 2 rapid SELECT transitions, then read for 6-button detection
+    pulse_select_line();
+    pulse_select_line();
     data = read_data_lines();
-    bool six_button = ((data & 0x0F) == 0);
+    // Use bit 6 from read_data_lines to detect 6-button controller
+    bool six_button = (data & (1 << 6)) != 0;
 
     // 4. Final SELECT=1: Only now are X/Y/Z/MODE valid (on direction lines)
-    set_select_line(1); sleep_us(10);
+    set_select_line(HIGH); sleep_us(10);
     data = read_data_lines();
     if (six_button) {
         pad->z    = (data & (1 << 0)) != 0;
@@ -105,6 +126,8 @@ void read_genesis_joypad(joypad_state_t *pad) {
         pad->x    = (data & (1 << 2)) != 0;
         pad->mode = (data & (1 << 3)) != 0;
     } else {
-        pad->z = pad->y = pad->x = pad->mode = false;
+        pad->x = pad->y = pad->z = pad->mode = false;
     }
+    set_select_line(LOW); sleep_us(10);
+    set_select_line(HIGH); sleep_us(10);
 }
